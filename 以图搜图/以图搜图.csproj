@@ -34,4 +34,23 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!--
+    内置 ffmpeg：视频抽帧用。
+    复制到输出目录的 tools\ 下，FfmpegLocator 会自动在此查找。
+    说明：这是 LGPL v3 构建（可随本程序分发），仅用于解码与抽帧，
+          不涉及再编码，符合 LGPL 的使用条件；许可全文见 tools\ffmpeg-LICENSE.txt。
+    体积约 127MB——若不希望内置，删除本 ItemGroup 与 tools 目录即可，
+          此时视频抽帧会自动退回系统缩略图方案（功能仍可用）。
+  -->
+  <ItemGroup Condition="Exists('tools\ffmpeg.exe')">
+    <None Include="tools\ffmpeg.exe">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>tools\ffmpeg.exe</Link>
+    </None>
+    <None Include="tools\ffmpeg-LICENSE.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>tools\ffmpeg-LICENSE.txt</Link>
+    </None>
+  </ItemGroup>
 </Project>

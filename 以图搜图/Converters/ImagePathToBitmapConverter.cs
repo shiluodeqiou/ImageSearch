@@ -2,15 +2,42 @@
 using System.IO;
 using System.Windows.Data;
 using System.Windows.Media.Imaging;
+using 以图搜图.Models;
+using 以图搜图.Services;
 
 namespace 以图搜图.Converters;
 
+/// <summary>
+/// 把文件路径转换为可显示的位图。
+///
+/// 视频无法被 BitmapImage 直接加载，因此这里改指它的缩略图缓存文件。
+/// 缩略图不存在时返回 null（界面显示空白而非抛异常）；
+/// 注意此处只查缓存、不触发抽帧，避免绑定过程阻塞界面。
+/// </summary>
 public class ImagePathToBitmapConverter : IValueConverter
 {
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is not string path || string.IsNullOrEmpty(path) || !File.Exists(path))
+        if (value is not string path || string.IsNullOrEmpty(path))
+        {
             return null;
+        }
+
+        if (VideoFormats.IsVideo(path))
+        {
+            var thumbnail = VideoThumbnailCache.GetCached(path);
+            if (string.IsNullOrEmpty(thumbnail))
+            {
+                return null;
+            }
+
+            path = thumbnail;
+        }
+
+        if (!File.Exists(path))
+        {
+            return null;
+        }
 
         try
         {

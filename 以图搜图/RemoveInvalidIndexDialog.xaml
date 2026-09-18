@@ -1,0 +1,157 @@
+﻿<Window x:Class="以图搜图.RemoveInvalidIndexDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="清理无效索引"
+        Height="560"
+        Width="720"
+        WindowStartupLocation="CenterOwner"
+        Background="#F5F5F5"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True"
+        ResizeMode="CanResize">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="检查结果"
+                   FontSize="15"
+                   FontWeight="SemiBold"
+                   Foreground="#2C3E50"
+                   Margin="0,0,0,10" />
+
+        <!-- 统计卡片 -->
+        <Border Grid.Row="1"
+                Background="White"
+                BorderBrush="#DDDDDD"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Text="当前索引" FontSize="12" Foreground="#777777" />
+                    <TextBlock x:Name="TotalText" Text="0" FontSize="20" FontWeight="Bold" Foreground="#2C3E50" />
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Text="确认不存在" FontSize="12" Foreground="#777777" />
+                    <TextBlock x:Name="MissingText" Text="0" FontSize="20" FontWeight="Bold" Foreground="#D32F2F" />
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                    <TextBlock Text="检查失败（保留）" FontSize="12" Foreground="#777777" />
+                    <TextBlock x:Name="FailedText" Text="0" FontSize="20" FontWeight="Bold" Foreground="#FFA000" />
+                </StackPanel>
+                <StackPanel Grid.Column="3">
+                    <TextBlock Text="有效索引" FontSize="12" Foreground="#777777" />
+                    <TextBlock x:Name="ValidText" Text="0" FontSize="20" FontWeight="Bold" Foreground="#28A745" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 警告区 -->
+        <Border x:Name="WarningBox"
+                Grid.Row="3"
+                Background="#FFF8E1"
+                BorderBrush="#FFD54F"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="12"
+                Margin="0,12,0,10"
+                Visibility="Collapsed">
+            <StackPanel>
+                <TextBlock x:Name="WarningTitle"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Foreground="#E65100"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="WarningBody"
+                           FontSize="12"
+                           Foreground="#6D4C41"
+                           TextWrapping="Wrap"
+                           Margin="0,5,0,0" />
+
+                <!--
+                  比例异常（>20%）时必须先明确勾选确认，否则「确认删除」保持禁用。
+                  这是安全阈值要求的「默认阻止」，并非早期那种「手动输入待删数量才能解锁」——
+                  用户不必推算数字，只需确认事实一次。
+                -->
+                <CheckBox x:Name="AcknowledgeCheck"
+                          Content="我确认这些文件确实已被删除（如更换硬盘、整理过目录），而不是磁盘离线或权限问题"
+                          FontSize="12"
+                          Foreground="#6D4C41"
+                          Margin="0,10,0,0"
+                          Visibility="Collapsed"
+                          Checked="Acknowledge_Changed"
+                          Unchecked="Acknowledge_Changed" />
+            </StackPanel>
+        </Border>
+
+        <!-- 待删除列表 -->
+        <Grid Grid.Row="4">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0"
+                       Text="待删除的索引（文件已确认不存在）"
+                       FontSize="13"
+                       Foreground="#555555"
+                       Margin="0,0,0,6" />
+
+            <ListBox x:Name="MissingList"
+                     Grid.Row="1"
+                     FontSize="12"
+                     BorderBrush="#DDDDDD"
+                     BorderThickness="1"
+                     Background="White" />
+
+            <TextBlock x:Name="TruncateHint"
+                       Grid.Row="2"
+                       FontSize="11"
+                       Foreground="#999999"
+                       Margin="0,6,0,0"
+                       Visibility="Collapsed" />
+        </Grid>
+
+        <!-- 按钮区 -->
+        <Grid Grid.Row="5" Margin="0,14,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                <Button x:Name="ViewFailedButton"
+                        Content="查看检查失败项"
+                        Padding="16,8"
+                        MinHeight="36"
+                        Click="ViewFailed_Click" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CancelButton"
+                        Content="取消"
+                        Padding="20,8"
+                        MinHeight="36"
+                        Margin="0,0,10,0"
+                        Click="Cancel_Click" />
+                <Button x:Name="ConfirmButton"
+                        Content="确认删除"
+                        Padding="20,8"
+                        MinHeight="36"
+                        Background="#D32F2F"
+                        Foreground="White"
+                        BorderThickness="0"
+                        IsEnabled="False"
+                        Click="Confirm_Click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

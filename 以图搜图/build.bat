@@ -28,14 +28,14 @@ echo.
 echo [3/3] 编译成功！
 echo.
 echo 可执行文件位置：
-echo bin\Release\net9.0-windows\以图搜图.exe
+echo bin\Release\net10.0-windows7.0\以图搜图.exe
 echo.
 
 set /p runapp="是否立即运行程序？(Y/N): "
 if /i "%runapp%"=="Y" (
     echo.
     echo 正在启动程序...
-    start "" "bin\Release\net9.0-windows\以图搜图.exe"
+    start "" "bin\Release\net10.0-windows7.0\以图搜图.exe"
 )
 
 pause

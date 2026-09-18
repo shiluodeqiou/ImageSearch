@@ -2,6 +2,7 @@
 using System.Windows;
 using Masuit.Tools.Files;
 using Masuit.Tools.Logging;
+using 以图搜图.ViewModels;
 using 以图搜图.WebAPI;
 
 namespace 以图搜图;
@@ -14,6 +15,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
 #if DEBUG
+        ShowMainWindow();
         return;
 #endif
         var isAdmin = new IniFile("config.ini").GetValue("Global", "RunAsAdmin", false);
@@ -37,24 +39,31 @@ public partial class App : Application
                     LogManager.Error(ex);
                     MessageBox.Show("需要管理员权限才能运行此应用程序。", "权限不足", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
+
+                // 本进程只负责拉起提升后的实例，随即退出。
+                // 注意这里**不要创建主窗口**（见下方 ShowMainWindow 的说明）。
                 Current.Shutdown();
                 return;
             }
         }
 
-        WebApiStartup.Run(e.Args);
 #if !DEBUG
-        // 检查单实例
+        // 单实例检查必须早于一切资源初始化（尤其 HTTP 服务）：
+        // 否则第二实例会先在同一端口上把 Kestrel 跑起来、
+        // 抛端口占用异常（且 Run 是被 fire-and-forget 的 Task，无人感知），
+        // 之后才发现已有实例而退出。
         _mutex = new Mutex(true, MutexName, out bool isNewInstance);
 
         if (!isNewInstance)
         {
-            // 应用已在运行，激活现有实例并退出
+            // 应用已在运行，激活现有实例并退出（同样不创建主窗口）
             ActivateExistingWindow();
             Current.Shutdown();
             return;
         }
 #endif
+
+        WebApiStartup.Run(e.Args);
 
         base.OnStartup(e);
 
@@ -81,6 +90,36 @@ public partial class App : Application
         {
             LogManager.Error((Exception)args.ExceptionObject);
         };
+
+        ShowMainWindow();
+    }
+
+    /// <summary>
+    /// 创建并显示主窗口。
+    ///
+    /// 为什么不用 App.xaml 的 <c>StartupUri</c> 自动创建：
+    /// 那样的话，**即使前面已经决定退出**（提权重启、单实例激活），
+    /// WPF 仍会在 OnStartup 返回后照样把主窗口建出来并显示，
+    /// 于是那个注定要退出的进程会短暂闪出一个窗口，
+    /// 并触发关闭流程——早期版本因此出现过
+    /// 「每次启动都弹『正在加载索引…请稍后再试』且无法关闭」的故障。
+    /// 改为在确认要继续运行之后才手动创建，从根上避免多创建一个无用窗口。
+    /// </summary>
+    private static void ShowMainWindow()
+    {
+        var window = new MainWindow();
+        Current.MainWindow = window;
+        window.Show();
+
+        // 以管理员身份运行时，Windows 的权限隔离（UIPI）会阻止普通权限的
+        // 资源管理器向提权窗口投递拖放消息，拖放会表现为"毫无反应"。
+        // 这是系统级限制、程序内无法绕过，因此主动说明并给出替代输入方式，
+        // 避免用户对着提示「可直接拖放图片到窗口进行搜索」反复尝试。
+        if (IsRunAsAdmin() && window.DataContext is MainViewModel vm)
+        {
+            vm.StatusMessage = "⚠️ 正以管理员身份运行：Windows 会阻止从资源管理器拖放文件。"
+                + "如需拖放，请把 config.ini 的 RunAsAdmin 改为 false；也可用「选择图片」或 Ctrl+V 粘贴。";
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)

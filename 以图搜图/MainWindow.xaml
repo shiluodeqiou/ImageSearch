@@ -15,16 +15,32 @@
         AllowDrop="True"
         Drop="Window_Drop"
         DragEnter="Window_DragEnter"
+        DragOver="Window_DragOver"
         Background="#F5F5F5"
         TextOptions.TextFormattingMode="Ideal"
         TextOptions.TextRenderingMode="ClearType"
         UseLayoutRounding="True"
-        SnapsToDevicePixels="True">
+        SnapsToDevicePixels="True"
+        Topmost="{Binding IsAlwaysOnTop}">
     <Window.DataContext>
         <viewmodels:MainViewModel />
     </Window.DataContext>
 
     <Window.Resources>
+
+        <!--
+          搜索结果的视图（含分组）。
+          必须在这里声明、并绑定到 ItemsSource 上，而**不能**在 Loaded 事件里
+          事后给默认视图加分组：
+          DataGrid 首次测量时若还没有 GroupDescriptions，含星号(*)的列就算不出宽度，
+          全部退化到最小列宽 20px 并一直锁死（实测）。声明式绑定保证分组在测量前就绪。
+        -->
+        <CollectionViewSource x:Key="SearchResultsView"
+                              Source="{Binding SearchResults}">
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="所在文件夹" />
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
 
         <!-- 转换器 -->
         <converters:InverseBoolConverter x:Key="InverseBoolConverter" />
@@ -197,6 +213,73 @@
                   Value="#AAAAAA" />
                     <Setter Property="BorderBrush"
                   Value="#DDDDDD" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 置顶按钮样式：带边框的小图标按钮，选中（已置顶）时用强调色高亮。
+             刻意保留可见边框——纯透明背景的图标在浅色卡片上不够显眼，用户容易找不到。 -->
+        <Style x:Key="PinButtonStyle"
+           TargetType="ToggleButton">
+            <Setter Property="Width"
+              Value="32" />
+            <Setter Property="Height"
+              Value="28" />
+            <Setter Property="FontSize"
+              Value="14" />
+            <Setter Property="Cursor"
+              Value="Hand" />
+            <Setter Property="Padding"
+              Value="0" />
+            <Setter Property="Background"
+              Value="#FFFFFF" />
+            <Setter Property="Foreground"
+              Value="#666666" />
+            <Setter Property="ToolTip"
+              Value="置顶显示：让窗口始终保持在最前面" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="PinBorder"
+                      Background="{TemplateBinding Background}"
+                      BorderBrush="#CCCCCC"
+                      BorderThickness="1"
+                      CornerRadius="5">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver"
+                       Value="True">
+                                <Setter TargetName="PinBorder"
+                        Property="Background"
+                        Value="#F0F0F0" />
+                                <Setter TargetName="PinBorder"
+                        Property="BorderBrush"
+                        Value="#999999" />
+                                <Setter Property="Foreground"
+                        Value="#333333" />
+                            </Trigger>
+                            <Trigger Property="IsChecked"
+                       Value="True">
+                                <Setter TargetName="PinBorder"
+                        Property="Background"
+                        Value="#E6F3FF" />
+                                <Setter TargetName="PinBorder"
+                        Property="BorderBrush"
+                        Value="#007ACC" />
+                                <Setter Property="Foreground"
+                        Value="#007ACC" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsChecked"
+                 Value="True">
+                    <Setter Property="ToolTip"
+                  Value="已置顶：点击取消置顶" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -571,16 +654,31 @@
         <Border Grid.Row="0"
             Style="{StaticResource CardStyle}">
             <StackPanel>
-                <!-- 标题栏 - 左侧标题，右侧索引总数 -->
+                <!-- 标题栏 - 左侧折叠开关+标题，右侧索引总数与置顶 -->
                 <Grid Margin="0,0,0,12">
-                    <TextBlock Text="📁 索引配置"
-                       Style="{StaticResource SectionHeaderStyle}"
-                       HorizontalAlignment="Left"
-                       Margin="0" />
+                    <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center">
+                        <Button Style="{StaticResource SecondaryButtonStyle}"
+                          Command="{Binding ToggleIndexConfigCommand}"
+                          Content="{Binding IndexConfigToggleGlyph}"
+                          Width="30"
+                          Height="26"
+                          MinHeight="26"
+                          Padding="0"
+                          FontSize="11"
+                          Margin="0,0,8,0"
+                          ToolTip="展开/收起索引配置" />
+                        <TextBlock Text="📁 索引配置"
+                           Style="{StaticResource SectionHeaderStyle}"
+                           Margin="0"
+                           VerticalAlignment="Center" />
+                    </StackPanel>
 
                     <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Right"
-                        VerticalAlignment="Center">
+                        VerticalAlignment="Center"
+                        Margin="0,0,44,0">
                         <TextBlock Text="索引总数："
                          Style="{StaticResource InfoTextStyle}"
                          FontSize="13" />
@@ -589,50 +687,184 @@
                          FontSize="14"
                          FontWeight="Bold" />
                     </StackPanel>
+
+                    <!-- 窗口置顶：放在最右上角，位置与系统窗口按钮的习惯一致 -->
+                    <ToggleButton x:Name="AlwaysOnTopButton"
+                          Style="{StaticResource PinButtonStyle}"
+                          HorizontalAlignment="Right"
+                          VerticalAlignment="Center"
+                          Content="📌"
+                          IsChecked="{Binding IsAlwaysOnTop, Mode=TwoWay}" />
                 </Grid>
 
-                <Grid>
+                <!--
+                  以下内容整体可折叠：索引配置属于「设置一次就不常动」的部分，
+                  搜索才是高频操作，收起后把纵向空间让给搜索结果。
+                  进度卡也在这个范围内，因此开始索引/清理时会自动展开（见 MainViewModel）。
+                -->
+                <StackPanel Visibility="{Binding IndexConfigVisibility}">
+
+                <!-- 队列操作按钮 -->
+                <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <TextBlock Grid.Column="0"
-                     Text="文件夹路径"
-                     Style="{StaticResource LabelStyle}" />
-                    <TextBox Grid.Column="1"
-                   Text="{Binding DirectoryPath, UpdateSourceTrigger=PropertyChanged}"
-                   Style="{StaticResource ModernTextBoxStyle}"
-                   AllowDrop="True"
-                   Drop="TxtDirectory_Drop"
-                   DragEnter="Txt_DragEnter"
-                   Margin="0,0,10,0" />
-                    <Button Grid.Column="2"
-                  Content="📂 选择文件夹"
+                    <Button Grid.Column="0"
+                  Content="📂 添加文件夹"
                   Style="{StaticResource SecondaryButtonStyle}"
-                  Command="{Binding SelectDirectoryCommand}"
+                  Command="{Binding AddFoldersCommand}"
                   Width="125"
                   Height="36"
                   Margin="0,0,8,0" />
+                    <Button Grid.Column="1"
+                  Content="🗑️ 删除选中"
+                  Style="{StaticResource SecondaryButtonStyle}"
+                  Command="{Binding RemoveQueueItemCommand}"
+                  Width="110"
+                  Height="36"
+                  Margin="0,0,8,0" />
+                    <Button Grid.Column="2"
+                  Content="🧹 清空队列"
+                  Style="{StaticResource SecondaryButtonStyle}"
+                  Command="{Binding ClearQueueCommand}"
+                  Width="110"
+                  Height="36"
+                  Margin="0,0,8,0" />
                     <Button Grid.Column="3"
-                  Content="{Binding UpdateIndexButtonText}"
+                  Content="▶️ 开始队列"
                   Style="{StaticResource PrimaryButtonStyle}"
-                  Command="{Binding UpdateIndexCommand}"
-                  IsEnabled="{Binding UpdateIndexButtonEnabled}"
+                  Command="{Binding StartQueueCommand}"
+                  IsEnabled="{Binding IsQueueRunning, Converter={StaticResource InverseBoolConverter}}"
                   Width="125"
                   Height="36"
-                  Margin="0,0,15,0" />
+                  Margin="0,0,8,0" />
+                    <Button Grid.Column="4"
+                  Content="⏹️ 停止队列"
+                  Style="{StaticResource SecondaryButtonStyle}"
+                  Command="{Binding StopQueueCommand}"
+                  IsEnabled="{Binding IsQueueRunning}"
+                  Width="110"
+                  Height="36"
+                  Margin="0,0,8,0" />
 
-                    <!-- 移除无效索引选项 - 与按钮并排 -->
-                    <CheckBox Grid.Column="4"
-                    Content="移除无效索引"
-                    IsChecked="{Binding RemoveInvalidIndex}"
+                    <!--
+                      是否索引视频：关闭后进入「快速同步模式」——
+                      跳过最慢的抽帧环节，并重新扫描全部目录，快速把图片变动同步进来。
+                      放在按钮行的空档（第 5 列）里，不占用按钮空间。
+                    -->
+                    <CheckBox Grid.Column="5"
+                    Content="索引视频"
+                    IsChecked="{Binding IncludeVideosInIndex, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Center"
+                    Margin="4,0,8,0"
+                    ToolTip="勾选：索引图片和视频（首次或需补全时用）。&#10;取消：只同步图片，跳过最慢的视频抽帧（约快百倍），&#10;并重新扫描全部目录以纳入新增/变动的图片。" />
+
+                    <!-- 清理无效索引：独立操作，执行前有预览与安全确认 -->
+                    <Button Grid.Column="6"
+                    Content="🧽 清理无效索引"
+                    Style="{StaticResource SecondaryButtonStyle}"
+                    Command="{Binding CleanInvalidIndexCommand}"
+                    IsEnabled="{Binding IsCheckingInvalidIndex, Converter={StaticResource InverseBoolConverter}}"
                     Visibility="{Binding ShowRemoveInvalidIndex}"
-                    VerticalAlignment="Center" />
+                    Width="140"
+                    Height="36"
+                    Margin="0,0,8,0"
+                    ToolTip="检查索引中文件已不存在的条目。只有确认文件不存在的才会被列出，删除前需二次确认。" />
+
+                    <!--
+                      停止清理：仅在检查进行中出现。
+                      大索引全量检查要跑很久，没有中止入口的话点错了只能强杀进程。
+                      停止只是不再往下检查，不会删除任何索引。
+                    -->
+                    <Button Grid.Column="7"
+                    Content="⏹️ 停止检查"
+                    Style="{StaticResource SecondaryButtonStyle}"
+                    Command="{Binding StopCleanupCommand}"
+                    Visibility="{Binding CheckingInvalidIndexVisibility}"
+                    Width="110"
+                    Height="36"
+                    ToolTip="停止检查（已检查部分的进度作废，不会删除任何索引）" />
                 </Grid>
+
+                <!-- 索引队列列表 -->
+                <Border BorderBrush="#E0E0E0"
+                BorderThickness="1"
+                CornerRadius="6"
+                Background="#FCFCFC">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <ListBox Grid.Row="0"
+                     ItemsSource="{Binding IndexQueue}"
+                     SelectedItem="{Binding SelectedQueueItem}"
+                     MinHeight="80"
+                     MaxHeight="170"
+                     BorderThickness="0"
+                     Background="Transparent"
+                     AllowDrop="True"
+                     Drop="QueueList_Drop"
+                     DragOver="QueueList_DragOver"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="8,5" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Status}" Value="Running">
+                                            <Setter Property="Background" Value="#E6F3FF" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                            <Setter Property="Foreground" Value="#D32F2F" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                     Text="{Binding Directory}"
+                                     TextTrimming="CharacterEllipsis"
+                                     VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1"
+                                     Text="{Binding DisplayStatus}"
+                                     FontWeight="SemiBold"
+                                     Foreground="#007ACC"
+                                     Margin="10,0,0,0"
+                                     VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <Border Grid.Row="1"
+                      Background="#F8F9FA"
+                      BorderBrush="#E0E0E0"
+                      BorderThickness="0,1,0,0"
+                      Padding="10,6">
+                            <TextBlock Text="{Binding QueueStatusText}"
+                         FontSize="12"
+                         Foreground="#666666"
+                         TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+                </Border>
 
                 <!-- 索引进度可视化 -->
                 <Border Visibility="{Binding IndexProgressVisibility}"
@@ -733,7 +965,7 @@
                       Stretch="Uniform"
                       Margin="0,0,6,0"
                       VerticalAlignment="Center" />
-                                <TextBlock Text="速度: "
+                                <TextBlock Text="{Binding ProgressSpeedLabel}"
                            FontSize="12"
                            Foreground="#666666"
                            VerticalAlignment="Center" />
@@ -744,9 +976,10 @@
                            VerticalAlignment="Center" />
                             </StackPanel>
 
-                            <!-- 吞吐量 -->
+                            <!-- 吞吐量：清理无效索引时不读文件内容，此项无意义，故按可见性隐藏 -->
                             <StackPanel Grid.Column="2"
-                          Orientation="Horizontal">
+                          Orientation="Horizontal"
+                          Visibility="{Binding ProgressThroughputVisibility}">
                                 <Path Data="M13,9V3.5L18.5,9M6,2C4.89,2 4,2.89 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2H6Z"
                       Fill="#FF6B6B"
                       Width="14"
@@ -765,9 +998,10 @@
                            VerticalAlignment="Center" />
                             </StackPanel>
 
-                            <!-- 最大吞吐量 -->
+                            <!-- 最大吞吐量：同吞吐量，清理索引时一并隐藏 -->
                             <StackPanel Grid.Column="4"
-                          Orientation="Horizontal">
+                          Orientation="Horizontal"
+                          Visibility="{Binding ProgressThroughputVisibility}">
                                 <Path Data="M13,9V3.5L18.5,9M6,2C4.89,2 4,2.89 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2H6Z"
                       Fill="#FFA500"
                       Width="14"
@@ -809,6 +1043,7 @@
                         </Grid>
                     </Grid>
                 </Border>
+                </StackPanel>
             </StackPanel>
         </Border>
 
@@ -837,6 +1072,7 @@
                    AllowDrop="True"
                    Drop="TxtPic_Drop"
                    DragEnter="Txt_DragEnter"
+                   DragOver="Txt_DragOver"
                    Margin="0,0,10,0" />
                     <Button Grid.Column="2"
                   Content="🖼️ 选择图片"
@@ -988,8 +1224,9 @@
                     </Border>
 
                     <DataGrid Grid.Row="1"
-                    ItemsSource="{Binding SearchResults}"
+                    ItemsSource="{Binding Source={StaticResource SearchResultsView}}"
                     SelectedItem="{Binding SelectedResult}"
+                    x:Name="SearchResultGrid"
                     Style="{StaticResource ModernDataGridStyle}"
                     RowStyle="{StaticResource ModernDataGridRowStyle}"
                     AutoGenerateColumns="False"
@@ -998,14 +1235,53 @@
                     CanUserAddRows="False"
                     KeyUp="DataGrid_KeyUp"
                     MouseDoubleClick="DataGrid_MouseDoubleClick"
+                    SizeChanged="SearchResultGrid_SizeChanged"
+                    VirtualizingPanel.IsVirtualizing="True"
+                    VirtualizingPanel.VirtualizationMode="Recycling"
+                    VirtualizingPanel.IsVirtualizingWhenGrouping="True"
                     BorderThickness="0">
                         <DataGrid.Columns>
-                            <DataGridTemplateColumn Header="路径"
-                                      Width="2*">
+                            <!--
+                              第一列（文件名）用固定像素宽，余量由代码后置动态分配（见 MainWindow.xaml.cs）。
+                              这里**不能用星号（2*）**：WPF 的 DataGrid 在启用分组时
+                              无法解析星号列宽度，会把**所有列**压到最小列宽 20px（已实测）。
+                            -->
+                            <DataGridTemplateColumn Header="文件名"
+                                      Width="300">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding 路径}"
-                               TextWrapping="Wrap"
+                                        <TextBlock Text="{Binding 文件名}"
+                               Padding="8,5"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding 路径}" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <!-- 每行一个「打开所在文件夹」按钮，紧跟在文件名后（免去先选中再右键） -->
+                            <DataGridTemplateColumn Header="操作"
+                                      Width="110">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="📂 打开文件夹"
+                                Style="{StaticResource SecondaryButtonStyle}"
+                                Command="{Binding DataContext.OpenResultFolderCommand,
+                                                  RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                CommandParameter="{Binding}"
+                                MinHeight="26"
+                                Height="26"
+                                Padding="8,0"
+                                FontSize="12"
+                                Margin="4,2"
+                                ToolTip="在资源管理器中打开该文件所在文件夹并选中它" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="类型"
+                                      Width="64">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding 类型标签}"
                                Padding="8,5"
                                VerticalAlignment="Center" />
                                     </DataTemplate>
@@ -1013,30 +1289,75 @@
                             </DataGridTemplateColumn>
                             <DataGridTextColumn Header="匹配度"
                                   Binding="{Binding 匹配度, StringFormat=P2}"
-                                  Width="80" />
+                                  Width="72" />
                             <DataGridTextColumn Header="大小"
                                   Binding="{Binding 大小}"
-                                  Width="80" />
+                                  Width="72" />
                             <DataGridTextColumn Header="文件夹文件数"
                                   Binding="{Binding 所属文件夹文件数}"
-                                  Width="100" />
+                                  Width="84" />
                             <DataGridTextColumn Header="文件夹大小"
                                   Binding="{Binding 所属文件夹大小}"
-                                  Width="100" />
+                                  Width="84" />
                             <DataGridTextColumn Header="匹配算法"
                                   Binding="{Binding 匹配算法}"
-                                  Width="100" />
+                                  Width="92" />
                         </DataGrid.Columns>
                         <DataGrid.ContextMenu>
                             <ContextMenu>
                                 <MenuItem Header="📂 打开所在文件夹 (Ctrl+O)"
                           Command="{Binding OpenFolderCommand}" />
-                                <MenuItem Header="🗑️ 删除 (Delete)"
-                          Command="{Binding DeleteCommand}" />
-                                <MenuItem Header="♻️ 删除到回收站 (Shift+Delete)"
+                                <MenuItem Header="♻️ 删除到回收站 (Delete)"
                           Command="{Binding DeleteToRecycleBinCommand}" />
+                                <MenuItem Header="🗑️ 永久删除 (Shift+Delete，不可恢复)"
+                          Command="{Binding DeleteCommand}" />
                             </ContextMenu>
                         </DataGrid.ContextMenu>
+                        <!--
+                          按文件夹分组：检索常用来找出「同一张图散落在哪些文件夹」，
+                          分组标题头把每个位置隔开并给出该文件夹内的命中数，
+                          一眼就能数出有几个不同位置。
+                          分组在代码后置里对默认视图设置（比 XAML 绑定更稳妥）。
+                        -->
+                        <DataGrid.GroupStyle>
+                            <GroupStyle>
+                                <!--
+                                  容器必须横向拉伸到整行宽度。
+                                  否则 DataGrid 在分组模式下算不出内容宽度，
+                                  会把**所有列**压到最小列宽（实测全部塌成 20px）。
+                                -->
+                                <GroupStyle.ContainerStyle>
+                                    <Style TargetType="GroupItem">
+                                        <Setter Property="HorizontalContentAlignment"
+                                  Value="Stretch" />
+                                        <Setter Property="HorizontalAlignment"
+                                  Value="Stretch" />
+                                    </Style>
+                                </GroupStyle.ContainerStyle>
+                                <GroupStyle.HeaderTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#EAF3FB"
+                                BorderBrush="#CFE3F5"
+                                BorderThickness="0,0,0,1"
+                                Padding="8,5"
+                                HorizontalAlignment="Stretch">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="📁"
+                                       Foreground="#007ACC"
+                                       Margin="0,0,6,0" />
+                                                <TextBlock Text="{Binding Name}"
+                                       FontWeight="SemiBold"
+                                       Foreground="#1F4E79"
+                                       TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding ItemCount, StringFormat='（{0} 项命中）'}"
+                                       Foreground="#5A7FA6"
+                                       Margin="6,0,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </GroupStyle.HeaderTemplate>
+                            </GroupStyle>
+                        </DataGrid.GroupStyle>
                     </DataGrid>
 
                     <!-- Loading 覆盖层 -->
@@ -1231,7 +1552,7 @@
                        Foreground="#555555"
                        VerticalAlignment="Center"
                        Margin="0,0,6,0" />
-                    <TextBlock Text="可直接拖放图片到窗口进行搜索 | "
+                    <TextBlock Text="可直接拖放图片或视频到窗口进行搜索，拖入文件夹则加入索引队列 | "
                        FontSize="12"
                        Foreground="#888888"
                        VerticalAlignment="Center" />
@@ -1250,6 +1571,20 @@
                      FontSize="12" />
               </Hyperlink>
                     </TextBlock>
+
+                    <!--
+                      操作结果提示（非阻塞）：索引完成、清理完成等都显示在这里，
+                      不再弹「确定」对话框打断操作。
+                    -->
+                    <TextBlock Text="{Binding StatusMessage}"
+                       Visibility="{Binding StatusMessageVisibility}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       Foreground="#1B7F3B"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"
+                       Margin="18,0,6,0"
+                       ToolTip="{Binding StatusMessage}" />
                     <StackPanel Orientation="Horizontal"
          VerticalAlignment="Center"
          Margin="15,0,15,0">
