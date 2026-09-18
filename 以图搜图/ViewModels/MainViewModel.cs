@@ -314,11 +314,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _updateIndexTimer = new Timer(TimeSpan.FromHours(1));
             _updateIndexTimer.Elapsed += (sender, args) =>
             {
-                if (StartQueueCommand.CanExecute(sender) && !IsQueueRunning && IndexProgressVisibility != Visibility.Visible)
+                // 这里刻意不碰 StartQueueCommand：命令的 CanExecute 只接受命令自己的
+                // 参数类型（传别的对象会抛 ArgumentException），而定时器的回调抛异常
+                // 会直接终止进程。是否该跑交给上面的条件与 RunQueueAsync 内的原子守卫判断。
+                if (!IsQueueRunning && IndexProgressVisibility != Visibility.Visible)
                 {
                     // 走 automatic:true 的路径：定时任务在用户没操作时自己跑起来，
                     // 任何模态框都会打断用户，因此它全程只写状态栏与日志。
-                    Application.Current.Dispatcher.Invoke(() => _ = StartQueue(automatic: true));
+                    Application.Current.Dispatcher.Invoke(() => _ = RunQueueAutomaticallyAsync());
                 }
             };
             _updateIndexTimer.Start();
@@ -704,13 +707,31 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>按队列顺序逐个目录建立索引，单个目录失败不影响后续目录。</summary>
+    [RelayCommand(AllowConcurrentExecutions = true)]
+    private async Task StartQueue()
+    {
+        await RunQueueAsync(automatic: false);
+    }
+
+    /// <summary>
+    /// 「自动更新」定时器的执行入口。
+    ///
+    /// 特意不走 <see cref="StartQueueCommand"/>：命令方法一旦带参数，
+    /// 生成的命令就从 RelayCommand 变成 RelayCommand&lt;T&gt;，而按钮不带参数时
+    /// 调用的是 CanExecute(null)——null 转不成 T，命令被判为不可执行，
+    /// 「开始队列」按钮会直接变成不可点击。（实测确认）
+    /// </summary>
+    private async Task RunQueueAutomaticallyAsync()
+    {
+        await RunQueueAsync(automatic: true);
+    }
+
     /// <param name="automatic">
     /// 是否由「自动更新」定时器触发。自动触发时全程不弹模态框：
     /// 它在用户没做任何操作的时候自己跑起来，弹框会打断正在做的事，
     /// 结果一律走状态栏 + 日志（人工触发的运行保留弹框，因为用户在等结果）。
     /// </param>
-    [RelayCommand(AllowConcurrentExecutions = true)]
-    private async Task StartQueue(bool automatic = false)
+    private async Task RunQueueAsync(bool automatic)
     {
         // 原子地「检查并置位」：不能写成 `if (IsQueueRunning) return; ... IsQueueRunning = true;`
         // ——两者之间存在窗口，快速双击「开始队列」会让两个执行流都通过检查，
