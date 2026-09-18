@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using Masuit.Tools.Logging;
 using 以图搜图.Models;
 
 namespace 以图搜图.Services;
@@ -217,6 +218,11 @@ public sealed class IndexQueueRunner(ImageIndexService indexService)
                     anyFailure.Add(item);
                     item.Message = ex.Message;
                     result.FailedDirectories.Add($"{item.Directory}（{label}）：{ex.Message}");
+
+                    // 必须留痕：调用方在自动同步时不弹窗（模态框会打断用户），
+                    // 只把消息塞进 FailedDirectories 的话，事后在日志里根本查不到原因。
+                    LogManager.Error($"索引目录处理失败：{item.Directory}（{label}）", ex);
+
                     ItemStatusChanged?.Invoke(this, new QueueItemStatusEventArgs(item, IndexSourceStatus.Failed, ex.Message));
                 }
             }

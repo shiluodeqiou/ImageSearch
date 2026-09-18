@@ -65,7 +65,26 @@ public class ImageSearchService
         return (count, sizeMb);
     }
 
-    public async Task<List<SearchResult>> SearchAsync(string filename, ConcurrentDictionary<string, IndexItem> index, MatchAlgorithm algorithm, float similarity, bool checkRotated, bool checkFlipped)
+    /// <summary>候选桶索引的缓存锁。</summary>
+    private readonly object _candidateIndexLock = new();
+
+    private HashCandidateIndex? _candidateIndex;
+    private ConcurrentDictionary<string, IndexItem>? _candidateIndexSource;
+    private int _candidateIndexSourceCount;
+
+    /// <remarks>
+    /// <paramref name="useCandidateIndex"/> 为 true 时用 DCT 候选桶跳过不可能命中的条目。
+    /// 仅当算法不含 Difference Hash 时才可能生效（候选桶只按 DCT 哈希建桶）。
+    /// 属于近似剪枝：更快，但相似度阈值附近的少量真命中会被漏掉。默认 false，即全量比对。
+    /// </remarks>
+    public async Task<List<SearchResult>> SearchAsync(
+        string filename,
+        ConcurrentDictionary<string, IndexItem> index,
+        MatchAlgorithm algorithm,
+        float similarity,
+        bool checkRotated,
+        bool checkFlipped,
+        bool useCandidateIndex = false)
     {
         // 哈希比对是纯 CPU/内存带宽密集型循环，并发度按物理核来定，
         // 避免高并发下的内存带宽争抢与缓存失效（与索引路径同理）。
@@ -198,15 +217,53 @@ public class ImageSearchService
             var list = new List<SearchResult>();
             var sim = Math.Max(0.85, similarity);
 
+            // 查询图的哈希到此已固定。先落到数组再比对：
+            // 原先每个条目都用 ConcurrentBag.Max(...) 遍历一次，等于对同一批哈希
+            // 反复走迭代器；数组既省掉这部分开销，也让候选桶查询只取一次。
+            var queryDifferenceHashes = defHashs.ToArray();
+            var queryDctHashes = dctHashs.ToArray();
+            var queryDctHash64s = pHashs.ToArray();
 
-            list.AddRange(index.Chunk(parallelism).AsParallel().WithDegreeOfParallelism(parallelism).SelectMany(grouping =>
+            var useDifferenceHash = algorithm.HasFlag(MatchAlgorithm.DifferenceHash);
+            var useDctHash32 = algorithm.HasFlag(MatchAlgorithm.DctHash32);
+            var useDctHash64 = algorithm.HasFlag(MatchAlgorithm.DctHash64);
+
+            IEnumerable<KeyValuePair<string, IndexItem>> searchEntries = index;
+
+            // 候选桶剪枝：只对「不含 Difference Hash 的算法」可用——
+            // 候选桶按 DCT 哈希建桶，给不出 Difference Hash 的候选集。
+            // 命中范围因此收窄到「与查询图共享至少一个 8 位窗口」的条目，
+            // 大幅减少比对量，但会漏掉阈值边缘的少量真命中（见 HashCandidateIndex 说明）。
+            if (useCandidateIndex && !useDifferenceHash && (useDctHash32 || useDctHash64))
             {
-                var items = new List<SearchResult>();
-                foreach (var (key, value) in grouping)
+                var candidateIndex = GetCandidateIndex(index);
+                var candidatePaths = candidateIndex.FindCandidates(queryDctHashes, queryDctHash64s);
+
+                searchEntries = candidatePaths
+                    .Select(path => index.TryGetValue(path, out var item)
+                        ? (KeyValuePair<string, IndexItem>?)new KeyValuePair<string, IndexItem>(path, item)
+                        : null)
+                    .Where(entry => entry.HasValue)
+                    .Select(entry => entry!.Value);
+            }
+
+            // 每个线程各自攒一小批结果，最后一次性合并：
+            // 比每个条目都去争用同一个 List 少了大量锁与分配。
+            var resultBatches = new ConcurrentBag<List<SearchResult>>();
+            var searchOptions = new ParallelOptions { MaxDegreeOfParallelism = parallelism };
+
+            Parallel.ForEach(
+                searchEntries,
+                searchOptions,
+                () => new List<SearchResult>(),
+                (entry, _, items) =>
                 {
-                    if (algorithm.HasFlag(MatchAlgorithm.DctHash64))
+                    var key = entry.Key;
+                    var value = entry.Value;
+
+                    if (useDctHash64)
                     {
-                        var match = pHashs.Max(h => ImageHasher.Compare(value.DctHash64, h));
+                        var match = MaxCompare(value.DctHash64, queryDctHash64s);
                         if (match > sim)
                         {
                             items.Add(new SearchResult
@@ -217,9 +274,9 @@ public class ImageSearchService
                             });
                         }
                     }
-                    if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
+                    if (useDifferenceHash)
                     {
-                        var match = defHashs.Max(h => ImageHasher.Compare(value.DifferenceHash, h));
+                        var match = MaxCompare(value.DifferenceHash, queryDifferenceHashes);
                         if (match > similarity)
                         {
                             items.Add(new SearchResult
@@ -230,9 +287,9 @@ public class ImageSearchService
                             });
                         }
                     }
-                    if (algorithm.HasFlag(MatchAlgorithm.DctHash32))
+                    if (useDctHash32)
                     {
-                        var match = dctHashs.Max(h => ImageHasher.Compare(value.DctHash, h));
+                        var match = MaxCompare(value.DctHash, queryDctHashes);
                         if (match > sim)
                         {
                             items.Add(new SearchResult
@@ -243,9 +300,12 @@ public class ImageSearchService
                             });
                         }
                     }
-                }
-                return items;
-            }));
+
+                    return items;
+                },
+                items => resultBatches.Add(items));
+
+            list.AddRange(resultBatches.SelectMany(x => x));
 
             list = list.OrderByDescending(a => a.匹配度).DistinctBy(e => e.路径).ToList();
 
@@ -352,6 +412,65 @@ public class ImageSearchService
 
             return list;
         });
+    }
+
+    /// <summary>单个哈希对一组查询哈希取最大相似度。查询哈希为空时返回 0。</summary>
+    private static float MaxCompare(ulong value, ulong[] queryHashes)
+    {
+        var max = 0f;
+        foreach (var queryHash in queryHashes)
+        {
+            var match = ImageHasher.Compare(value, queryHash);
+            if (match > max)
+            {
+                max = match;
+            }
+        }
+
+        return max;
+    }
+
+    /// <summary>一组哈希（Difference Hash 每个图有多个）对一组查询哈希取最大相似度。</summary>
+    private static float MaxCompare(ulong[] values, ulong[][] queryHashes)
+    {
+        var max = 0f;
+        foreach (var queryHash in queryHashes)
+        {
+            var match = ImageHasher.Compare(values, queryHash);
+            if (match > max)
+            {
+                max = match;
+            }
+        }
+
+        return max;
+    }
+
+    /// <summary>
+    /// 取（必要时重建）候选桶索引。
+    ///
+    /// 索引内容在运行中会增长，所以缓存要能失效：按「同一个字典实例 + 条目数」判断。
+    /// 条目数存的是**建桶时快照的长度**，不是当时的 index.Count——
+    /// 若建桶期间恰好有新条目写入，快照长度会小于 index.Count，
+    /// 下次搜索就会重建；反过来存 Count 则可能把没进桶的条目也当成已覆盖。
+    /// </summary>
+    private HashCandidateIndex GetCandidateIndex(ConcurrentDictionary<string, IndexItem> index)
+    {
+        lock (_candidateIndexLock)
+        {
+            if (_candidateIndex != null
+                && ReferenceEquals(_candidateIndexSource, index)
+                && _candidateIndexSourceCount == index.Count)
+            {
+                return _candidateIndex;
+            }
+
+            var snapshot = index.ToArray();
+            _candidateIndex = HashCandidateIndex.Build(snapshot);
+            _candidateIndexSource = index;
+            _candidateIndexSourceCount = snapshot.Length;
+            return _candidateIndex;
+        }
     }
 
     /// <summary>按量级格式化文件大小；旧实现恒以 KB 显示，MB 级文件会出现 1843KB 这种数字。</summary>

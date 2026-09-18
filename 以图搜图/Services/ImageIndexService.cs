@@ -674,10 +674,32 @@ public sealed class ImageIndexService : Disposable
     {
         if (File.Exists("Everything64.dll") && Process.GetProcessesByName("Everything").Length > 0)
         {
-            return directories.SelectMany(s =>
+            return directories.SelectMany(static s =>
             {
-                var array = EverythingHelper.EnumerateFiles(s).ToArray();
-                return array.Length == 0 ? Directory.GetFiles(s, "*", SearchOption.AllDirectories) : array;
+                // Everything 的调用是 P/Invoke，失败会直接抛出；这里必须兜住。
+                // 否则一次瞬时故障就会让该目录整轮不索引——而下面的 Directory.GetFiles
+                // 分支本来就有保护，两条路径不该这么不对称。
+                try
+                {
+                    var array = EverythingHelper.EnumerateFiles(s).ToArray();
+                    if (array.Length > 0)
+                    {
+                        return array;
+                    }
+                }
+                catch
+                {
+                    // 退回到自行遍历
+                }
+
+                try
+                {
+                    return Directory.GetFiles(s, "*", SearchOption.AllDirectories);
+                }
+                catch
+                {
+                    return [];
+                }
             }).ToArray();
         }
 

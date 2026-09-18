@@ -261,6 +261,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool includeVideosInIndex = true;
 
+    /// <summary>
+    /// 检索时是否用 DCT 候选桶跳过不可能命中的条目。
+    ///
+    /// 只对「不含 Difference Hash 的算法」生效（候选桶按 DCT 哈希建桶），
+    /// 且是近似剪枝：更快，但相似度阈值附近的少量真命中会被漏掉，
+    /// 索引很大时还会额外占用数百 MB 内存。默认关闭（全量比对）。
+    /// </summary>
+    [ObservableProperty]
+    private bool useDctCandidateIndex;
+
     /// <summary>队列执行期间正在处理的目录，用于更新进度文字。</summary>
     private IndexSourceItem? _currentRunningItem;
 
@@ -288,6 +298,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 后者的 IniFile.Save() 会抹掉全部注释（见 UiPreferences 的说明）。
         IsAlwaysOnTop = UiPreferences.LoadAlwaysOnTop();
         IncludeVideosInIndex = UiPreferences.LoadIncludeVideos();
+        UseDctCandidateIndex = UiPreferences.LoadUseDctCandidateIndex();
 
         // 异步初始化性能监测，避免阻塞 UI 线程
         _ = Task.Run(InitializePerformanceMonitoring);
@@ -305,7 +316,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 if (StartQueueCommand.CanExecute(sender) && !IsQueueRunning && IndexProgressVisibility != Visibility.Visible)
                 {
-                    Application.Current.Dispatcher.Invoke(() => StartQueueCommand.Execute(sender));
+                    // 走 automatic:true 的路径：定时任务在用户没操作时自己跑起来，
+                    // 任何模态框都会打断用户，因此它全程只写状态栏与日志。
+                    Application.Current.Dispatcher.Invoke(() => _ = StartQueue(automatic: true));
                 }
             };
             _updateIndexTimer.Start();
@@ -450,6 +463,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         UiPreferences.SaveIncludeVideos(value);
         UpdateQueueStatus();
+    }
+
+    /// <summary>「候选桶加速」变化时写入偏好文件，下次启动沿用。</summary>
+    partial void OnUseDctCandidateIndexChanged(bool value)
+    {
+        UiPreferences.SaveUseDctCandidateIndex(value);
     }
 
     private async void LoadIndexAsync()
@@ -685,8 +704,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>按队列顺序逐个目录建立索引，单个目录失败不影响后续目录。</summary>
+    /// <param name="automatic">
+    /// 是否由「自动更新」定时器触发。自动触发时全程不弹模态框：
+    /// 它在用户没做任何操作的时候自己跑起来，弹框会打断正在做的事，
+    /// 结果一律走状态栏 + 日志（人工触发的运行保留弹框，因为用户在等结果）。
+    /// </param>
     [RelayCommand(AllowConcurrentExecutions = true)]
-    private async Task StartQueue()
+    private async Task StartQueue(bool automatic = false)
     {
         // 原子地「检查并置位」：不能写成 `if (IsQueueRunning) return; ... IsQueueRunning = true;`
         // ——两者之间存在窗口，快速双击「开始队列」会让两个执行流都通过检查，
@@ -698,7 +722,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            await StartQueueCore();
+            await StartQueueCore(automatic);
         }
         finally
         {
@@ -709,10 +733,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>队列执行标志，0=空闲 1=运行中（配合 Interlocked 使用）。</summary>
     private int _queueRunningFlag;
 
-    private async Task StartQueueCore()
+    private async Task StartQueueCore(bool automatic)
     {
         if (IndexQueue.Count == 0)
         {
+            if (automatic)
+            {
+                NotifyStatus("⚠️ 自动同步：队列中没有索引目录，已跳过");
+                return;
+            }
+
             MessageBox.Show(Application.Current.MainWindow!, "请先添加要索引的文件夹", "警告", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -728,6 +758,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (runnable.Count == 0)
         {
+            if (automatic)
+            {
+                NotifyStatus("自动同步：所有目录的图片与视频都已完成索引，无需处理");
+                return;
+            }
+
             MessageBox.Show(
                 Application.Current.MainWindow!,
                 "队列中所有目录的图片与视频都已完成索引。\r\n如需重新索引，请移除后重新添加。",
@@ -739,6 +775,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // 服务层已经会等待加载完成，这里只是把等待显式告知用户，避免界面"卡一下"让人以为没反应。
         if (!_indexService.IsLoaded)
         {
+            if (automatic)
+            {
+                // 自动同步遇到未加载完就放弃本轮，等下个周期；等待会把定时器线程占住
+                NotifyStatus("⚠️ 自动同步：索引尚未载入完成，本轮已跳过");
+                return;
+            }
+
             MessageBox.Show(
                 Application.Current.MainWindow!,
                 "索引正在载入中，请稍候再开始队列。\r\n\r\n" +
@@ -812,8 +855,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     detail.AppendLine("  " + f);
                 }
 
-                var errorDialog = new ErrorsDialog(detail.ToString());
-                errorDialog.ShowDialog();
+                if (automatic)
+                {
+                    // 自动同步不弹窗：它在用户没操作时自己跑起来，模态框会打断用户。
+                    // 失败信息不能就此消失——写日志 + 状态栏点名，且队列项会标记为失败。
+                    LogManager.Error(nameof(MainViewModel), $"{head}（自动同步）有 {result.FailedDirectories.Count} 个目录处理失败：\r\n{string.Join("\r\n", result.FailedDirectories)}");
+                    NotifyStatus(
+                        $"⚠️ {head}（自动同步）：{result.FailedDirectories.Count} 个目录处理失败，"
+                        + $"详情见日志。首个：{result.FailedDirectories[0]}");
+                }
+                else
+                {
+                    var errorDialog = new ErrorsDialog(detail.ToString());
+                    errorDialog.ShowDialog();
+                }
             }
         }
         finally
@@ -1399,7 +1454,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     MatchAlgorithm,
                     sim,
                     FindRotated,
-                    FindFlipped);
+                    FindFlipped,
+                    UseDctCandidateIndex);
 
                 sw.Stop();
                 return (resultList, sw.ElapsedMilliseconds);

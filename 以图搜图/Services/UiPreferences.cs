@@ -43,6 +43,18 @@ public static class UiPreferences
     /// <summary>保存「是否索引视频」偏好。</summary>
     public static void SaveIncludeVideos(bool value) => Update(m => m.IncludeVideos = value);
 
+    /// <summary>
+    /// 检索时是否用 DCT 候选桶加速。默认 false。
+    ///
+    /// 默认关闭的原因：它是近似剪枝，会在相似度阈值附近漏掉少量真命中，
+    /// 且只对「不含 Difference Hash 的算法」生效（默认的「全部」用不上）。
+    /// 关闭时是全量比对，结果与历史版本完全一致。
+    /// </summary>
+    public static bool LoadUseDctCandidateIndex() => Read().UseDctCandidateIndex;
+
+    /// <summary>保存「是否用 DCT 候选桶加速」偏好。</summary>
+    public static void SaveUseDctCandidateIndex(bool value) => Update(m => m.UseDctCandidateIndex = value);
+
     private static Model Read()
     {
         lock (Sync)
@@ -96,5 +108,8 @@ public static class UiPreferences
 
         /// <summary>默认 true：不写该键时按「索引视频」处理。</summary>
         public bool IncludeVideos { get; set; } = true;
+
+        /// <summary>默认 false：全量比对，结果与历史版本一致。</summary>
+        public bool UseDctCandidateIndex { get; set; }
     }
 }

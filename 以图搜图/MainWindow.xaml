@@ -1164,6 +1164,17 @@
           IsChecked="{Binding FindFlipped}"
           Margin="0,0,20,0" />
 
+                    <!--
+                      DCT 候选桶加速：只对「不含 Difference Hash 的算法」生效，
+                      且是近似剪枝。默认关闭，保证结果与历史版本一致。
+                    -->
+                    <CheckBox Grid.Column="5"
+          Content="⚡ 候选桶加速"
+          IsChecked="{Binding UseDctCandidateIndex, Mode=TwoWay}"
+          HorizontalAlignment="Left"
+          VerticalAlignment="Center"
+          ToolTip="仅在使用 DCT 算法时生效（匹配算法不含 Difference Hash）。&#10;用分桶索引跳过不可能命中的条目，检索更快，&#10;代价是相似度阈值附近的少量结果可能被漏掉；&#10;索引很大时还会额外占用数百 MB 内存。&#10;不勾选为全量比对，结果最完整。" />
+
                     <StackPanel Grid.Column="5"
                       Orientation="Horizontal"
                       HorizontalAlignment="Right">
