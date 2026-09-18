@@ -280,3 +280,8 @@ Test
 # 内置的 ffmpeg（约 127MB，体积过大不适合纳入版本库）
 # 缺失时项目仍可正常编译：csproj 带 Exists 条件，运行时自动退回系统缩略图方案。
 /以图搜图/tools/
+
+# AI 协作记忆：项目规则/决策/交接随代码提交，当日流水（含个人上下文）不入库
+.ai-memory/*/
+!.ai-memory/project_memory.md
+!.ai-memory/handoff.md
