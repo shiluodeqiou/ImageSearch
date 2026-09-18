@@ -81,7 +81,7 @@ public class HomeController : Controller
         try
         {
             await upload.OpenReadStream().SaveFileAsync(filename);
-            return Ok(await _searchService.SearchAsync(filename, _indexService.Index, algorithm, similar / 100, checkRotated, checkFlip));
+            return Ok(await _searchService.SearchAsync(filename, _indexService.Index, algorithm, similar / 100, checkRotated, checkFlip, _indexService.IndexVersion));
         }
         finally
         {

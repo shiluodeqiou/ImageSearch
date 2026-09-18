@@ -124,6 +124,21 @@ public sealed class ImageIndexService : Disposable
 
     public ConcurrentDictionary<string, IndexItem> Index { get; private set; } = new();
 
+    /// <summary>
+    /// 索引内容的版本号：任何增删（含载入替换）都会自增。
+    ///
+    /// 供「按索引内容做缓存」的调用方判断缓存是否失效，例如检索的 DCT 候选桶。
+    /// 为什么不能用条目数代替：先删一条、再新增一条会让总数回到原值，
+    /// 按数量判断时缓存永不失效，新增的条目会**静默搜不到**。
+    ///
+    /// 注意：新增、删除、载入三条路径都必须自增，漏掉任何一处都会让判断失真。
+    /// </summary>
+    public int IndexVersion => Volatile.Read(ref _indexVersion);
+
+    private int _indexVersion;
+
+    private void BumpIndexVersion() => Interlocked.Increment(ref _indexVersion);
+
     public bool IsIndexing { get; private set; }
     public bool IsWriting { get; private set; }
 
@@ -174,6 +189,7 @@ public sealed class ImageIndexService : Disposable
             if (set != null)
             {
                 Index = set.ToConcurrentDictionary(x => x.FilePath);
+                BumpIndexVersion();
                 LoadResult = new IndexLoadResult(true, set.Count, source, null, usedFallback);
 
                 if (usedFallback)
@@ -394,6 +410,7 @@ public sealed class ImageIndexService : Disposable
                         DctHash64 = image.DctHash64()
                     };
                     Index[file] = indexItem;
+                    BumpIndexVersion();
 
                     var size = new FileInfo(file).Length;
                     Interlocked.Increment(ref _totalCount);
@@ -569,6 +586,7 @@ public sealed class ImageIndexService : Disposable
                         DctHash64 = image.DctHash64()
                     };
                     Index[item.Path] = indexItem;
+                    BumpIndexVersion();
 
                     Interlocked.Increment(ref _totalCount);
                     Interlocked.Add(ref _totalSize, item.Length);
@@ -620,7 +638,11 @@ public sealed class ImageIndexService : Disposable
 
     public void RemoveFromIndex(string path)
     {
-        Index.TryRemove(path, out _);
+        if (Index.TryRemove(path, out _))
+        {
+            BumpIndexVersion();
+        }
+
         _writeQueue.Enqueue(1);
     }
 
@@ -641,6 +663,10 @@ public sealed class ImageIndexService : Disposable
 
         if (removed > 0)
         {
+            // 循环结束后自增一次即可：期间并发搜索可能拿到「含已删路径」的旧缓存，
+            // 但那不会出错——检索会用 TryGetValue 跳过已不存在的路径。
+            // 反过来（缓存里缺新条目）才是会静默漏检的方向，故新增路径必须逐条自增。
+            BumpIndexVersion();
             await FlushAsync();
         }
 

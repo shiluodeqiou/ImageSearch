@@ -70,12 +70,18 @@ public class ImageSearchService
 
     private HashCandidateIndex? _candidateIndex;
     private ConcurrentDictionary<string, IndexItem>? _candidateIndexSource;
-    private int _candidateIndexSourceCount;
+
+    /// <summary>建桶时所依据的索引版本号。</summary>
+    private int _candidateIndexSourceVersion = -1;
 
     /// <remarks>
     /// <paramref name="useCandidateIndex"/> 为 true 时用 DCT 候选桶跳过不可能命中的条目。
     /// 仅当算法不含 Difference Hash 时才可能生效（候选桶只按 DCT 哈希建桶）。
     /// 属于近似剪枝：更快，但相似度阈值附近的少量真命中会被漏掉。默认 false，即全量比对。
+    ///
+    /// <paramref name="indexVersion"/> 是调用方读到的索引版本号
+    /// （<see cref="ImageIndexService.IndexVersion"/>），用于判断候选桶缓存是否失效。
+    /// 必须传真实版本：传常量会让缓存永不失效，新增的条目在候选桶模式下静默搜不到。
     /// </remarks>
     public async Task<List<SearchResult>> SearchAsync(
         string filename,
@@ -84,6 +90,7 @@ public class ImageSearchService
         float similarity,
         bool checkRotated,
         bool checkFlipped,
+        int indexVersion,
         bool useCandidateIndex = false)
     {
         // 哈希比对是纯 CPU/内存带宽密集型循环，并发度按物理核来定，
@@ -236,7 +243,7 @@ public class ImageSearchService
             // 大幅减少比对量，但会漏掉阈值边缘的少量真命中（见 HashCandidateIndex 说明）。
             if (useCandidateIndex && !useDifferenceHash && (useDctHash32 || useDctHash64))
             {
-                var candidateIndex = GetCandidateIndex(index);
+                var candidateIndex = GetCandidateIndex(index, indexVersion);
                 var candidatePaths = candidateIndex.FindCandidates(queryDctHashes, queryDctHash64s);
 
                 searchEntries = candidatePaths
@@ -449,18 +456,21 @@ public class ImageSearchService
     /// <summary>
     /// 取（必要时重建）候选桶索引。
     ///
-    /// 索引内容在运行中会增长，所以缓存要能失效：按「同一个字典实例 + 条目数」判断。
-    /// 条目数存的是**建桶时快照的长度**，不是当时的 index.Count——
-    /// 若建桶期间恰好有新条目写入，快照长度会小于 index.Count，
-    /// 下次搜索就会重建；反过来存 Count 则可能把没进桶的条目也当成已覆盖。
+    /// 失效判断用「同一个字典实例 + 索引版本号」。
+    /// 不能用条目数：先删一条、再新增一条会让总数回到原值，
+    /// 那样缓存永不失效，新增的条目永远进不了候选集（静默漏检）。
+    ///
+    /// 版本号由调用方在进入检索前读取，必然早于这里的快照：
+    /// 若取快照期间索引又被改动，实际内容会比记录的版本更新，
+    /// 下次检索读到更高的版本号后会重建——宁愿多建一次，也不能让缓存声称自己比实际更新。
     /// </summary>
-    private HashCandidateIndex GetCandidateIndex(ConcurrentDictionary<string, IndexItem> index)
+    private HashCandidateIndex GetCandidateIndex(ConcurrentDictionary<string, IndexItem> index, int indexVersion)
     {
         lock (_candidateIndexLock)
         {
             if (_candidateIndex != null
                 && ReferenceEquals(_candidateIndexSource, index)
-                && _candidateIndexSourceCount == index.Count)
+                && _candidateIndexSourceVersion == indexVersion)
             {
                 return _candidateIndex;
             }
@@ -468,7 +478,7 @@ public class ImageSearchService
             var snapshot = index.ToArray();
             _candidateIndex = HashCandidateIndex.Build(snapshot);
             _candidateIndexSource = index;
-            _candidateIndexSourceCount = snapshot.Length;
+            _candidateIndexSourceVersion = indexVersion;
             return _candidateIndex;
         }
     }

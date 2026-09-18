@@ -1476,6 +1476,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                     sim,
                     FindRotated,
                     FindFlipped,
+                    _indexService.IndexVersion,
                     UseDctCandidateIndex);
 
                 sw.Stop();
