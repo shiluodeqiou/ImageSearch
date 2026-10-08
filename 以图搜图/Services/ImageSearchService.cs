@@ -74,6 +74,210 @@ public class ImageSearchService
     /// <summary>建桶时所依据的索引版本号。</summary>
     private int _candidateIndexSourceVersion = -1;
 
+    /// <summary>
+    /// 在当前统一索引中查找相似文件对。
+    /// 本地版本把图片、视频代表帧都存为 IndexItem，因此这里直接复用同一份索引。
+    /// </summary>
+    public async Task<List<SimilarImagePair>> FindSimilarPairsAsync(
+        string[] paths,
+        ConcurrentDictionary<string, IndexItem> index,
+        MatchAlgorithm algorithm,
+        float similarity,
+        bool ignoreSameFolder,
+        IProgress<int>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            var entries = new SimilarityHashes?[paths.Length];
+            var options = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = CpuInfo.RecommendedComputeConcurrency,
+                CancellationToken = cancellationToken
+            };
+
+            Parallel.For(0, paths.Length, options, i =>
+            {
+                if (index.TryGetValue(paths[i], out var item))
+                {
+                    entries[i] = new SimilarityHashes(
+                        paths[i],
+                        Path.GetDirectoryName(paths[i]) ?? string.Empty,
+                        item.DifferenceHash,
+                        item.DctHash,
+                        item.DctHash64);
+                }
+            });
+
+            var indexed = Enumerable.Range(0, entries.Length)
+                .Where(i => entries[i] is not null)
+                .ToArray();
+            var useDifferenceBuckets = algorithm.HasFlag(MatchAlgorithm.DifferenceHash) && similarity >= 0.88f;
+            var useDctBuckets = algorithm.HasFlag(MatchAlgorithm.DctHash32) || algorithm.HasFlag(MatchAlgorithm.DctHash64);
+            var restrictCandidates = useDifferenceBuckets ||
+                (useDctBuckets && !algorithm.HasFlag(MatchAlgorithm.DifferenceHash));
+            var differenceBuckets = useDifferenceBuckets ? BuildDifferenceBuckets(entries, cancellationToken) : null;
+            var dctIndex = useDctBuckets
+                ? HashCandidateIndex.Build(indexed.Select(i =>
+                    new KeyValuePair<string, IndexItem>(paths[i], index[paths[i]])).ToArray())
+                : null;
+            var positionsByPath = indexed.ToDictionary(i => paths[i], i => i, StringComparer.OrdinalIgnoreCase);
+            var pairs = new ConcurrentBag<SimilarImagePair>();
+            var completed = 0;
+
+            Parallel.ForEach(indexed, options, sourcePosition =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var source = entries[sourcePosition]!;
+                HashSet<int>? allowed = null;
+
+                if (restrictCandidates)
+                {
+                    allowed = [];
+                    if (differenceBuckets is not null)
+                    {
+                        AddDifferenceCandidates(source.DifferenceHash, differenceBuckets, similarity, allowed);
+                    }
+
+                    if (dctIndex is not null)
+                    {
+                        foreach (var path in dctIndex.FindCandidates(
+                            algorithm.HasFlag(MatchAlgorithm.DctHash32) ? [source.DctHash] : [],
+                            algorithm.HasFlag(MatchAlgorithm.DctHash64) ? [source.DctHash64] : []))
+                        {
+                            if (positionsByPath.TryGetValue(path, out var position))
+                            {
+                                allowed.Add(position);
+                            }
+                        }
+                    }
+                }
+
+                IEnumerable<int> candidatePositions = allowed is null
+                    ? Enumerable.Range(sourcePosition + 1, entries.Length - sourcePosition - 1)
+                    : allowed.Where(i => i > sourcePosition);
+
+                foreach (var candidatePosition in candidatePositions)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var candidate = entries[candidatePosition];
+                    if (candidate is null)
+                    {
+                        continue;
+                    }
+
+                    if (ignoreSameFolder && string.Equals(source.Directory, candidate.Directory, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var best = 0f;
+                    if (algorithm.HasFlag(MatchAlgorithm.DifferenceHash))
+                    {
+                        best = Math.Max(best, ImageHasher.Compare(source.DifferenceHash, candidate.DifferenceHash));
+                    }
+
+                    if (algorithm.HasFlag(MatchAlgorithm.DctHash32))
+                    {
+                        best = Math.Max(best, ImageHasher.Compare(source.DctHash, candidate.DctHash));
+                    }
+
+                    if (algorithm.HasFlag(MatchAlgorithm.DctHash64))
+                    {
+                        best = Math.Max(best, ImageHasher.Compare(source.DctHash64, candidate.DctHash64));
+                    }
+
+                    if (best >= similarity)
+                    {
+                        pairs.Add(new SimilarImagePair(source.Path, candidate.Path, best));
+                    }
+                }
+
+                var done = Interlocked.Increment(ref completed);
+                if (done % 256 == 0 || done == indexed.Length)
+                {
+                    progress?.Report(done);
+                }
+            });
+
+            return pairs.ToList();
+        }, cancellationToken);
+    }
+
+    private sealed record SimilarityHashes(
+        string Path,
+        string Directory,
+        ulong[] DifferenceHash,
+        ulong DctHash,
+        ulong DctHash64);
+
+    private static Dictionary<byte, List<int>>[] BuildDifferenceBuckets(
+        SimilarityHashes?[] entries, CancellationToken cancellationToken)
+    {
+        var buckets = Enumerable.Range(0, 32).Select(_ => new Dictionary<byte, List<int>>()).ToArray();
+        for (var i = 0; i < entries.Length; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var hash = entries[i]?.DifferenceHash;
+            if (hash is not { Length: >= 4 })
+            {
+                continue;
+            }
+
+            for (var table = 0; table < buckets.Length; table++)
+            {
+                var key = (byte)(hash[table / 8] >> ((table % 8) * 8));
+                if (!buckets[table].TryGetValue(key, out var positions))
+                {
+                    positions = [];
+                    buckets[table][key] = positions;
+                }
+
+                positions.Add(i);
+            }
+        }
+
+        return buckets;
+    }
+
+    private static void AddDifferenceCandidates(
+        ulong[] hash,
+        Dictionary<byte, List<int>>[] buckets,
+        float similarity,
+        HashSet<int> candidates)
+    {
+        if (hash.Length < 4)
+        {
+            return;
+        }
+
+        var maximumChangedBits = (int)Math.Ceiling((1 - similarity) * 256);
+        var minimumSharedBuckets = Math.Max(1, buckets.Length - maximumChangedBits);
+        var shared = new Dictionary<int, int>();
+        for (var table = 0; table < buckets.Length; table++)
+        {
+            var key = (byte)(hash[table / 8] >> ((table % 8) * 8));
+            if (!buckets[table].TryGetValue(key, out var positions))
+            {
+                continue;
+            }
+
+            foreach (var position in positions)
+            {
+                shared.TryGetValue(position, out var count);
+                shared[position] = count + 1;
+            }
+        }
+
+        foreach (var (position, count) in shared)
+        {
+            if (count >= minimumSharedBuckets)
+            {
+                candidates.Add(position);
+            }
+        }
+    }
+
     /// <remarks>
     /// <paramref name="useCandidateIndex"/> 为 true 时用 DCT 候选桶跳过不可能命中的条目。
     /// 仅当算法不含 Difference Hash 时才可能生效（候选桶只按 DCT 哈希建桶）。
@@ -494,3 +698,5 @@ public class ImageSearchService
         return $"{bytes / 1024}KB";
     }
 }
+
+public sealed record SimilarImagePair(string FirstPath, string SecondPath, float Similarity);

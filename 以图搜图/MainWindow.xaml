@@ -760,13 +760,21 @@
                       跳过最慢的抽帧环节，并重新扫描全部目录，快速把图片变动同步进来。
                       放在按钮行的空档（第 5 列）里，不占用按钮空间。
                     -->
-                    <CheckBox Grid.Column="5"
-                    Content="索引视频"
-                    IsChecked="{Binding IncludeVideosInIndex, Mode=TwoWay}"
-                    HorizontalAlignment="Left"
+                    <StackPanel Grid.Column="5"
+                    Orientation="Horizontal"
                     VerticalAlignment="Center"
-                    Margin="4,0,8,0"
-                    ToolTip="勾选：索引图片和视频（首次或需补全时用）。&#10;取消：只同步图片，跳过最慢的视频抽帧（约快百倍），&#10;并重新扫描全部目录以纳入新增/变动的图片。" />
+                    Margin="4,0,8,0">
+                        <CheckBox Content="索引视频"
+                        IsChecked="{Binding IncludeVideosInIndex, Mode=TwoWay}"
+                        VerticalAlignment="Center"
+                        Margin="0,0,12,0"
+                        ToolTip="勾选：索引图片和视频（首次或需补全时用）。&#10;取消：只同步图片，跳过最慢的视频抽帧（约快百倍），&#10;并重新扫描全部目录以纳入新增/变动的图片。" />
+                        <Button Content="相似文件查找"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Click="SimilarFiles_Click"
+                        Width="125"
+                        Height="36" />
+                    </StackPanel>
 
                     <!-- 清理无效索引：独立操作，执行前有预览与安全确认 -->
                     <Button Grid.Column="6"
